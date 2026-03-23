@@ -270,3 +270,66 @@ class TestCrawlAndIndex:
         crawler.crawl_and_index(indexer, max_pages=2)
 
         assert indexer.add_document.call_count == 2
+
+    @patch("src.crawler.requests.get")
+    def test_non_200_prints_failure_message(self, mock_get):
+        """A non-200 response should print a descriptive failure message."""
+        mock_get.return_value = _mock_response("Not found", status=404)
+
+        crawler = _make_crawler()
+        indexer = MagicMock()
+
+        with patch("builtins.print") as mock_print:
+            crawler.crawl_and_index(indexer, max_pages=1)
+
+        printed = " ".join(str(call) for call in mock_print.call_args_list)
+        assert "Failed to fetch" in printed
+
+    @patch("src.crawler.requests.get")
+    def test_network_error_prints_message(self, mock_get):
+        """A RequestException should print a network error message."""
+        import requests as req
+        mock_get.side_effect = req.ConnectionError("refused")
+
+        crawler = _make_crawler()
+        indexer = MagicMock()
+
+        with patch("builtins.print") as mock_print:
+            crawler.crawl_and_index(indexer, max_pages=1)
+
+        printed = " ".join(str(call) for call in mock_print.call_args_list)
+        assert "Network error on" in printed
+
+    def test_pre_visited_url_skipped(self):
+        """A URL already in visited that appears in the queue is skipped."""
+        crawler = _make_crawler()
+        indexer = MagicMock()
+
+        # Pre-mark the base URL as visited so the initial queue entry is skipped
+        crawler.visited.add(BASE_URL)
+
+        with patch("src.crawler.requests.get") as mock_get:
+            crawler.crawl_and_index(indexer, max_pages=1)
+
+        mock_get.assert_not_called()
+        indexer.add_document.assert_not_called()
+
+    @patch("src.crawler.requests.get")
+    def test_duplicate_content_skipped_during_crawl(self, mock_get):
+        """Two URLs with identical content: only the first is indexed."""
+        # Use an empty <a> so the link doesn't alter the extracted text,
+        # making both pages produce identical get_text() output.
+        page1 = "<html><body>Identical content<a href='/page/2/'></a></body></html>"
+        page2 = "<html><body>Identical content</body></html>"
+
+        mock_get.side_effect = [
+            _mock_response(page1),
+            _mock_response(page2),
+        ]
+
+        crawler = _make_crawler()
+        indexer = MagicMock()
+        crawler.crawl_and_index(indexer, max_pages=2)
+
+        assert mock_get.call_count == 2
+        assert indexer.add_document.call_count == 1
