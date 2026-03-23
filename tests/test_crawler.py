@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from src.Crawler import Crawler, RateLimiter
+from src.crawler import Crawler, RateLimiter
 
 
 # ---------------------------------------------------------------------------
@@ -16,13 +16,13 @@ class TestRateLimiter:
         rl = RateLimiter(delay_seconds=10.0)
         assert rl.delay_seconds == 10.0
 
-    @patch("src.Crawler.time.sleep")
+    @patch("src.crawler.time.sleep")
     def test_sleep_calls_time_sleep(self, mock_sleep):
         rl = RateLimiter(delay_seconds=6.0)
         rl.sleep()
         mock_sleep.assert_called_once_with(6.0)
 
-    @patch("src.Crawler.time.sleep")
+    @patch("src.crawler.time.sleep")
     def test_sleep_skipped_when_zero(self, mock_sleep):
         rl = RateLimiter(delay_seconds=0)
         rl.sleep()
@@ -89,7 +89,7 @@ class TestCrawlerURLHandling:
 # ---------------------------------------------------------------------------
 
 class TestCrawlAndIndex:
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_single_page_crawl(self, mock_get):
         """Crawl a single page with no outgoing links."""
         html = _html_page("Hello world")
@@ -106,7 +106,7 @@ class TestCrawlAndIndex:
         call_args = indexer.add_document.call_args
         assert call_args[0][0] == BASE_URL
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_follows_internal_links(self, mock_get):
         """Crawler should discover and follow internal links."""
         page1 = _html_page("first page", links=["/page/2/"])
@@ -124,7 +124,7 @@ class TestCrawlAndIndex:
 
         assert indexer.add_document.call_count == 2
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_does_not_revisit_pages(self, mock_get):
         """Already-visited URLs should not be fetched again."""
         page = _html_page("page", links=[BASE_URL])  # link back to self
@@ -138,7 +138,7 @@ class TestCrawlAndIndex:
         # Should only be called once despite the self-link
         mock_get.assert_called_once()
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_skips_non_html_responses(self, mock_get):
         """Non-HTML content-types should not be indexed."""
         mock_get.return_value = _mock_response(
@@ -152,7 +152,7 @@ class TestCrawlAndIndex:
 
         indexer.add_document.assert_not_called()
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_skips_failed_status_codes(self, mock_get):
         """Non-200 responses should not be indexed."""
         mock_get.return_value = _mock_response("Not found", status=404)
@@ -164,7 +164,7 @@ class TestCrawlAndIndex:
 
         indexer.add_document.assert_not_called()
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_handles_network_error(self, mock_get):
         """Network errors should be caught, not crash the crawler."""
         import requests as req
@@ -178,7 +178,7 @@ class TestCrawlAndIndex:
 
         indexer.add_document.assert_not_called()
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_max_pages_limits_crawl(self, mock_get):
         """The max_pages parameter should cap how many pages are indexed."""
         page = _html_page("page", links=["/page/2/", "/page/3/", "/page/4/"])
@@ -191,7 +191,7 @@ class TestCrawlAndIndex:
 
         assert indexer.add_document.call_count == 1
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_ignores_external_links(self, mock_get):
         """Links to other domains should not be followed."""
         page = _html_page("page", links=["https://external.com/other"])
@@ -206,7 +206,7 @@ class TestCrawlAndIndex:
         mock_get.assert_called_once()
         indexer.add_document.assert_called_once()
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_skips_duplicate_content(self, mock_get):
         """Two URLs with identical content should only be indexed once."""
         identical_html = _html_page("Identical content on both pages")
@@ -253,7 +253,7 @@ class TestCrawlAndIndex:
         assert len(docs_across_all_words) == 1
         assert "https://quotes.toscrape.com/tag/inspirational/" in docs_across_all_words
 
-    @patch("src.Crawler.requests.get")
+    @patch("src.crawler.requests.get")
     def test_different_content_both_indexed(self, mock_get):
         """Two URLs with different content should both be indexed."""
         # page1 links to page2 so the crawler discovers it

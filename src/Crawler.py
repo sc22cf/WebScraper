@@ -37,10 +37,31 @@ class Crawler:
         parsed = urlparse(url)
         return parsed.scheme in ('http', 'https') and parsed.netloc == self.domain
 
-    def crawl_and_index(self, indexer: InvertedIndex, max_pages: int = -1):
-        """
-        Crawl the website using a queue-based breadth-first approach.
-        Extracts visible text and adds it to the indexer.
+    def crawl_and_index(self, indexer: InvertedIndex, max_pages: int = -1) -> None:
+        """Crawl the website using breadth-first search (BFS) and index each page.
+
+        BFS is used because it explores pages level-by-level outward from the
+        start URL, which naturally discovers the most important (closest-linked)
+        pages first.  A FIFO queue (``urls_to_visit``) drives the traversal
+        while a ``visited`` set prevents re-fetching.
+
+        Content-hashing (MD5) is performed on the extracted text so that
+        duplicate pages served at different URLs are indexed only once.
+
+        Complexity
+        ----------
+        Let *P* = number of pages crawled, *L* = average links per page.
+
+        * Each page is dequeued, fetched, and parsed exactly once → **O(P)**
+          page visits.
+        * URL membership checks use a ``set``, so ``in self.visited`` is
+          **O(1)** amortised per check.
+        * Duplicate-content lookup via ``seen_hashes`` is also **O(1)**
+          amortised.
+        * Link discovery iterates every anchor on a page → **O(L)** per page.
+        * Overall traversal complexity: **O(P · L)**.
+        * Network I/O dominates wall-clock time; the politeness delay of ≥ 6 s
+          per request means total crawl time ≈ 6 · P seconds.
         """
         urls_to_visit = [self.base_url]
         pages_crawled = 0

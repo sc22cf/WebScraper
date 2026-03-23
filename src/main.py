@@ -1,5 +1,5 @@
 import os
-from src.Crawler import Crawler, RateLimiter
+from src.crawler import Crawler, RateLimiter
 from src.indexer import InvertedIndex
 from src.search import SearchEngine
 

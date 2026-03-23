@@ -1,34 +1,152 @@
-# Python Web Crawler & Search Engine
+# Search Engine Tool
 
-A command-line search tool that crawls `https://quotes.toscrape.com/`, builds an inverted index, and lets you search for multi-word queries.
+A command-line search engine that crawls [https://quotes.toscrape.com/](https://quotes.toscrape.com/), builds an inverted index of every word on every page, and lets users search for single or multi-word queries. Built for the COMP3011 Web Services coursework at the University of Leeds.
 
-## Requirements
-- Python 3.8+
+## Project Overview
 
-## Setup
-1. Create a virtual environment (optional but recommended)
-2. Install the requirements:
-   ```bash
-   pip install -r requirements.txt
-   ```
+The tool has four main components:
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **Crawler** | `src/Crawler.py` | Breadth-first crawl of the target site, respecting a 6-second politeness window between requests. Detects and skips duplicate content via MD5 hashing. |
+| **Indexer** | `src/indexer.py` | Builds an inverted index mapping every word to the pages it appears on, storing **frequency** and **token positions** for each word-page pair. |
+| **Search** | `src/search.py` | Query layer providing `print` (single-word lookup) and `find` (multi-word AND intersection). |
+| **CLI Shell** | `src/main.py` | Interactive command-line interface exposing `build`, `load`, `print`, and `find` commands. |
+
+## Installation & Setup
+
+### Prerequisites
+
+- Python 3.10+
+- pip
+
+### Steps
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/<your-username>/WebScraper.git
+cd WebScraper
+
+# 2. (Recommended) Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate        # macOS / Linux
+# venv\Scripts\activate         # Windows
+
+# 3. Install dependencies
+pip install -r requirements.txt
+```
+
+### Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `requests` | Composing HTTP requests to the target website |
+| `beautifulsoup4` | Parsing HTML pages and extracting text / links |
+
+These are listed in `requirements.txt` and installed in step 3 above.
 
 ## Usage
-Run the main program:
+
+Start the interactive shell:
+
 ```bash
 python -m src.main
 ```
 
-Available commands in the interactive shell:
-- `build`: Crawl the site and build the inverted index (respects the 6-second delay between requests).
-- `load`: Load the previously built index from the `data/` directory.
-- `print <word>`: Print the index entry for a specific word, showing URLs, frequency, and token positions.
-- `find <terms...>`: Return pages that contain all of the provided query terms (AND semantics).
-- `help`: See all commands.
-- `exit` or `quit`: Exit the program.
+### Commands
 
-## Architecture
-- `src/crawler.py`: Polite BFS crawler targeting internal links on the site.
-- `src/indexer.py`: Tokenizes content into lowercase alphanumeric words, stores inverted index.
-- `src/search.py`: Intersects postings lists to perform AND queries.
-- `src/main.py`: Command-line REPL.
-- `tests/`: Module unit tests.
+#### `build` — Crawl and index the website
+
+Visits every reachable page on the target site, builds the inverted index, and saves it to `data/index.json`. Observes a **6-second politeness window** between requests.
+
+```
+> build
+Crawling website and building index...
+Crawling: https://quotes.toscrape.com/
+Crawling: https://quotes.toscrape.com/login
+...
+Index built and saved to data/index.json.
+```
+
+#### `load` — Load a previously built index
+
+```
+> load
+Index loaded from data/index.json.
+```
+
+#### `print <word>` — View the inverted index entry for a word
+
+Shows every page containing the word along with its frequency and the token positions where it appears.
+
+```
+> print good
+Index entry for 'good':
+  https://quotes.toscrape.com/ — frequency: 2, positions: [54, 128]
+  https://quotes.toscrape.com/page/2/ — frequency: 1, positions: [31]
+```
+
+#### `find <query>` — Search for pages containing all query words
+
+Returns every page that contains **all** of the given words (AND semantics).
+
+```
+> find good friends
+Found in 1 page(s):
+  https://quotes.toscrape.com/
+
+> find indifference
+Found in 2 page(s):
+  https://quotes.toscrape.com/author/Elie-Wiesel
+  https://quotes.toscrape.com/tag/indifference/page/1/
+
+> find nonexistentword
+No pages found containing all terms: ['nonexistentword']
+```
+
+## Testing
+
+The test suite uses **pytest** with `unittest.mock` to mock all HTTP calls (no network required).
+
+```bash
+# Run the full suite with verbose output
+python -m pytest tests/ -v
+
+# Run with coverage report
+python -m pytest tests/ --cov=src --cov-report=term-missing
+```
+
+### Test files
+
+| File | What it covers |
+|------|---------------|
+| `tests/test_crawler.py` | RateLimiter, URL normalisation, BFS traversal, error handling, content deduplication |
+| `tests/test_indexer.py` | Tokenisation, frequency/position tracking, case insensitivity, edge cases |
+| `tests/test_storage.py` | JSON save/load round-trip, missing files, directory creation |
+| `tests/test_search.py` | `print_word`, `find` (single/multi-word, empty, unknown), CLI integration |
+
+## Project Structure
+
+```
+WebScraper/
+├── src/
+│   ├── __init__.py
+│   ├── Crawler.py          # BFS crawler with politeness & deduplication
+│   ├── indexer.py           # Inverted index (tokenise, index, persist)
+│   ├── search.py            # Query logic (print_word, find)
+│   └── main.py              # CLI shell
+├── tests/
+│   ├── __init__.py
+│   ├── test_crawler.py
+│   ├── test_indexer.py
+│   ├── test_storage.py
+│   └── test_search.py
+├── data/
+│   └── index.json           # Compiled inverted index (generated by build)
+├── .github/
+│   └── workflows/
+│       └── ci.yml           # GitHub Actions CI pipeline
+├── conftest.py              # pytest sys.path configuration
+├── requirements.txt
+└── README.md
+```

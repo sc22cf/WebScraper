@@ -26,7 +26,13 @@ class InvertedIndex:
 
     @staticmethod
     def tokenize(text: str) -> list[str]:
-        """Split text into lowercase, alphabetic tokens."""
+        """Split text into lowercase, alphabetic-only tokens.
+
+        Uses a single-pass regex (``re.findall``) which scans the input
+        string once from left to right.
+
+        Complexity: **O(N)** where *N* is the length of *text* in characters.
+        """
         return re.findall(r"[a-zA-Z]+", text.lower())
 
     # ------------------------------------------------------------------
@@ -34,7 +40,13 @@ class InvertedIndex:
     # ------------------------------------------------------------------
 
     def add_document(self, url: str, text: str) -> None:
-        """Tokenize *text* and record each word's frequency and positions for *url*."""
+        """Tokenize *text* and record each word's frequency and positions for *url*.
+
+        For every token the method performs a dictionary lookup and insert,
+        both of which are **O(1)** amortised for Python dicts.
+
+        Complexity: **O(T)** where *T* is the number of tokens in *text*.
+        """
         tokens = self.tokenize(text)
 
         for position, word in enumerate(tokens):
@@ -52,11 +64,18 @@ class InvertedIndex:
     # ------------------------------------------------------------------
 
     def get_entry(self, word: str) -> dict | None:
-        """Return the posting list for *word*, or None if absent."""
+        """Return the posting list for *word*, or ``None`` if absent.
+
+        Complexity: **O(1)** amortised — single hash-table lookup.
+        """
         return self.index.get(word.lower())
 
     def get_documents(self, word: str) -> list[str]:
-        """Return list of URLs containing *word*."""
+        """Return list of URLs containing *word*.
+
+        Complexity: **O(D)** where *D* is the number of documents that
+        contain the word (i.e. the length of the posting list).
+        """
         entry = self.get_entry(word)
         return list(entry.keys()) if entry else []
 
