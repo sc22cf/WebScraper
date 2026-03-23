@@ -8,7 +8,7 @@ The tool has four main components:
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Crawler** | `src/Crawler.py` | Breadth-first crawl of the target site, respecting a 6-second politeness window between requests. Detects and skips duplicate content via MD5 hashing. |
+| **Crawler** | `src/crawler.py` | Breadth-first crawl of the target site, respecting a 6-second politeness window between requests. Detects and skips duplicate content via MD5 hashing. |
 | **Indexer** | `src/indexer.py` | Builds an inverted index mapping every word to the pages it appears on, storing **frequency** and **token positions** for each word-page pair. |
 | **Search** | `src/search.py` | Query layer providing `print` (single-word lookup) and `find` (multi-word AND intersection). |
 | **CLI Shell** | `src/main.py` | Interactive command-line interface exposing `build`, `load`, `print`, and `find` commands. |
@@ -131,7 +131,7 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 WebScraper/
 ├── src/
 │   ├── __init__.py
-│   ├── Crawler.py          # BFS crawler with politeness & deduplication
+│   ├── crawler.py          # BFS crawler with politeness & deduplication
 │   ├── indexer.py           # Inverted index (tokenise, index, persist)
 │   ├── search.py            # Query logic (print_word, find)
 │   └── main.py              # CLI shell
