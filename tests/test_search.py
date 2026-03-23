@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from io import StringIO
 
 from src.indexer import InvertedIndex
@@ -195,3 +195,80 @@ class TestCLIIntegration:
         assert "frequency: 2" in output
         # "find banana" should produce no results
         assert "No pages found" in output
+
+    def test_eofError_exits_gracefully(self):
+        """Exhausting stdin (EOFError) should print 'Exiting.' and return."""
+        output = self._run_commands([])
+        assert "Exiting" in output
+
+    def test_keyboard_interrupt_exits_gracefully(self):
+        """KeyboardInterrupt on input should print 'Exiting.' and return."""
+        from src.main import run_shell
+
+        with patch("builtins.input", side_effect=KeyboardInterrupt), \
+             patch("sys.stdout", new_callable=StringIO) as mock_out:
+            run_shell()
+
+        assert "Exiting" in mock_out.getvalue()
+
+    def test_empty_input_is_skipped(self):
+        """An empty line should be skipped without error."""
+        output = self._run_commands(["", "quit"])
+        assert "Exiting" in output
+
+    def test_build_command(self):
+        """The build command should crawl, save the index, and confirm."""
+        from src.main import run_shell
+
+        with patch("src.main.Crawler") as mock_crawler_cls, \
+             patch("src.main.RateLimiter"), \
+             patch("src.main.InvertedIndex") as mock_idx_cls, \
+             patch("src.main.SearchEngine"), \
+             patch("sys.stdin", StringIO("build\nquit\n")), \
+             patch("sys.stdout", new_callable=StringIO) as mock_out:
+            mock_idx = MagicMock()
+            mock_idx_cls.return_value = mock_idx
+            mock_crawler = MagicMock()
+            mock_crawler_cls.return_value = mock_crawler
+            run_shell()
+
+        output = mock_out.getvalue()
+        assert "Index built" in output
+        mock_crawler.crawl_and_index.assert_called_once_with(mock_idx)
+        mock_idx.save_to_file.assert_called_once()
+
+    def test_find_no_terms_provided(self, tmp_path):
+        """'find' with an empty argument prints 'No search terms provided.'"""
+        import src.main as main_mod
+
+        idx = _small_index()
+        index_file = tmp_path / "index.json"
+        idx.save_to_file(str(index_file))
+
+        original_path = main_mod.INDEX_PATH
+        main_mod.INDEX_PATH = str(index_file)
+        try:
+            output = self._run_commands(["load", "find", "quit"])
+        finally:
+            main_mod.INDEX_PATH = original_path
+
+        assert "No search terms provided" in output
+
+    def test_exit_alias(self):
+        """The 'exit' command should exit the shell just like 'quit'."""
+        output = self._run_commands(["exit"])
+        assert "Exiting" in output
+
+    def test_main_entry_point(self):
+        """Running the module as __main__ invokes run_shell()."""
+        import sys
+        import runpy
+
+        # Remove cached entry so runpy doesn't emit a RuntimeWarning about
+        # 'src.main' already being in sys.modules before execution.
+        sys.modules.pop("src.main", None)
+
+        # Patch input to immediately raise EOFError so run_shell() exits cleanly
+        with patch("builtins.input", side_effect=EOFError), \
+             patch("sys.stdout", new_callable=StringIO):
+            runpy.run_module("src.main", run_name="__main__", alter_sys=True)
