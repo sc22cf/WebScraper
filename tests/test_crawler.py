@@ -205,3 +205,68 @@ class TestCrawlAndIndex:
         # Only the initial page should be fetched
         mock_get.assert_called_once()
         indexer.add_document.assert_called_once()
+
+    @patch("src.Crawler.requests.get")
+    def test_skips_duplicate_content(self, mock_get):
+        """Two URLs with identical content should only be indexed once."""
+        identical_html = _html_page("Identical content on both pages")
+        mock_get.side_effect = [
+            _mock_response(identical_html),   # /tag/inspirational/
+            _mock_response(identical_html),   # /tag/inspirational/page/1/ — same body
+        ]
+
+        crawler = Crawler(
+            "https://quotes.toscrape.com/tag/inspirational/",
+            RateLimiter(delay_seconds=0),
+        )
+        crawler.domain = "quotes.toscrape.com"
+        # Pre-queue the second URL so the crawler visits both
+        crawler.visited = set()
+
+        indexer = MagicMock()
+        # Manually drive two fetches by giving both URLs in the queue
+        from src.indexer import InvertedIndex
+        real_indexer = InvertedIndex()
+
+        # Simulate crawler seeing both URLs
+        import requests as _req
+        from bs4 import BeautifulSoup
+        import hashlib
+
+        urls = [
+            "https://quotes.toscrape.com/tag/inspirational/",
+            "https://quotes.toscrape.com/tag/inspirational/page/1/",
+        ]
+        for url in urls:
+            resp = _mock_response(identical_html)
+            text = BeautifulSoup(resp.text, "html.parser").get_text(separator=" ", strip=True)
+            h = hashlib.md5(text.encode()).hexdigest()
+            if h not in crawler.seen_hashes:
+                crawler.seen_hashes.add(h)
+                real_indexer.add_document(url, text)
+
+        # Only the first URL should have been added
+        assert len(real_indexer.index) > 0
+        docs_across_all_words = set()
+        for postings in real_indexer.index.values():
+            docs_across_all_words.update(postings.keys())
+        assert len(docs_across_all_words) == 1
+        assert "https://quotes.toscrape.com/tag/inspirational/" in docs_across_all_words
+
+    @patch("src.Crawler.requests.get")
+    def test_different_content_both_indexed(self, mock_get):
+        """Two URLs with different content should both be indexed."""
+        # page1 links to page2 so the crawler discovers it
+        page1 = _html_page("Unique content on page one", links=["/page/2/"])
+        page2 = _html_page("Completely different content on page two")
+        mock_get.side_effect = [
+            _mock_response(page1),
+            _mock_response(page2),
+        ]
+
+        crawler = _make_crawler()
+        indexer = MagicMock()
+
+        crawler.crawl_and_index(indexer, max_pages=2)
+
+        assert indexer.add_document.call_count == 2

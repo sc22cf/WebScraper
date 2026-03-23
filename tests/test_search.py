@@ -147,9 +147,15 @@ class TestCLIIntegration:
         output = self._run_commands(["find hello", "quit"])
         assert "No index loaded" in output
 
-    def test_load_missing_index(self):
-        output = self._run_commands(["load", "quit"])
-        assert "not found" in output.lower() or "Error" in output
+    def test_load_missing_index(self, tmp_path):
+        import src.main as main_mod
+        original_path = main_mod.INDEX_PATH
+        main_mod.INDEX_PATH = str(tmp_path / "nonexistent.json")
+        try:
+            output = self._run_commands(["load", "quit"])
+        finally:
+            main_mod.INDEX_PATH = original_path
+        assert "not found" in output.lower() or "error" in output.lower()
 
     def test_unknown_command(self):
         output = self._run_commands(["foo", "quit"])

@@ -1,3 +1,4 @@
+import hashlib
 import time
 import requests
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -23,6 +24,7 @@ class Crawler:
         self.base_url = base_url
         self.rate_limiter = rate_limiter
         self.visited: set = set()
+        self.seen_hashes: set = set()
         self.domain = urlparse(base_url).netloc
 
     def normalize_url(self, url: str) -> str:
@@ -75,6 +77,14 @@ class Crawler:
                 
                 # Extract text for the index (space separator ensures words don't merge)
                 page_text = soup.get_text(separator=' ', strip=True)
+
+                # Skip pages whose content we've already indexed (e.g. /tag/x/ == /tag/x/page/1/)
+                content_hash = hashlib.md5(page_text.encode()).hexdigest()
+                if content_hash in self.seen_hashes:
+                    print(f"Skipping duplicate content: {current_url}")
+                    continue
+                self.seen_hashes.add(content_hash)
+
                 indexer.add_document(current_url, page_text)
                 pages_crawled += 1
 
