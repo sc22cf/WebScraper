@@ -10,7 +10,7 @@ The tool has four main components:
 |-----------|------|---------|
 | **Crawler** | `src/crawler.py` | Breadth-first crawl of the target site, respecting a 6-second politeness window between requests. Detects and skips duplicate content via MD5 hashing. |
 | **Indexer** | `src/indexer.py` | Builds an inverted index mapping every word to the pages it appears on, storing **frequency** and **token positions** for each word-page pair. |
-| **Search** | `src/search.py` | Query layer providing `print` (single-word lookup) and `find` (multi-word AND intersection). |
+| **Search** | `src/search.py` | Query layer providing `print` (single-word lookup) and `find` (multi-word AND search with TF-IDF + proximity ranking). |
 | **CLI Shell** | `src/main.py` | Interactive command-line interface exposing `build`, `load`, `print`, and `find` commands. |
 
 ## Installation & Setup
@@ -88,21 +88,59 @@ Index entry for 'good':
 
 #### `find <query>` — Search for pages containing all query words
 
-Returns every page that contains **all** of the given words (AND semantics).
+Returns every page that contains **all** of the given words (AND semantics), ranked by a combined **TF-IDF + proximity** score.  For each result the output shows all three scoring components so the ranking is transparent.
 
 ```
 > find good friends
-Found in 1 page(s):
-  https://quotes.toscrape.com/
-
-> find indifference
-Found in 2 page(s):
-  https://quotes.toscrape.com/author/Elie-Wiesel
-  https://quotes.toscrape.com/tag/indifference/page/1/
+Found in 2 page(s) (ranked by relevance):
+  page: https://quotes.toscrape.com/
+    tfidf_score: 1.8420
+    proximity_score: 1.0000
+    final_weighted_score: 3.8420
+  page: https://quotes.toscrape.com/page/2/
+    tfidf_score: 0.6931
+    proximity_score: 0.2500
+    final_weighted_score: 1.1931
 
 > find nonexistentword
 No pages found containing all terms: ['nonexistentword']
 ```
+
+## Advanced Query Processing
+
+The search engine combines two complementary relevance signals to rank results for multi-word queries:
+
+### TF-IDF (Term Frequency–Inverse Document Frequency)
+
+The base relevance score.  For each query term *t* in a document *d*:
+
+* **TF(t, d)** — how many times *t* appears in *d*.
+* **IDF(t)** — `log(N / df)` where *N* is the total number of indexed pages and *df* is the number of pages containing *t*.  Rare terms receive a higher weight.
+* **tfidf\_score(d)** = Σ TF(t, d) × IDF(t) for all query terms.
+
+### Proximity scoring
+
+For queries with two or more terms, the engine evaluates how close the query words appear in each document using the **positional postings** already stored in the inverted index:
+
+1. For every consecutive pair of query terms, find the **minimum absolute distance** between any of their recorded positions in the document.
+2. Convert each pair distance to a score: `1 / min_distance`.  Adjacency (distance = 1) scores 1.0; distance = 4 scores 0.25, etc.
+3. The document's **proximity\_score** is the **average** of all pair scores, keeping the value in a consistent [0, 1] range.
+
+Single-word queries always receive a proximity score of 0.
+
+### Combined ranking
+
+The final score used for sorting is:
+
+```
+final_score = tfidf_score + PROXIMITY_WEIGHT × proximity_score
+```
+
+`PROXIMITY_WEIGHT` is a configurable constant (default **2.0**) defined at the top of `src/search.py`.  Increasing it makes positional closeness more important relative to term frequency.
+
+### Why this improves multi-word ranking
+
+Plain TF-IDF treats each query term independently — a page where "good" and "friends" appear on opposite ends scores the same as one where they sit side by side.  Adding proximity scoring means **documents with near-adjacent query terms naturally rank higher**, producing more intuitive results for phrase-like queries without requiring the user to use explicit phrase syntax.
 
 ## Testing
 

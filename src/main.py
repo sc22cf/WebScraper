@@ -59,8 +59,11 @@ def run_shell() -> None:
                 results = engine.find(argument)
                 if results:
                     print(f"Found in {len(results)} page(s) (ranked by relevance):")
-                    for url, score in results:
-                        print(f"  {url}  (TF-IDF: {score:.4f})")
+                    for r in results:
+                        print(f"  page: {r.url}")
+                        print(f"    tfidf_score: {r.tfidf_score:.4f}")
+                        print(f"    proximity_score: {r.proximity_score:.4f}")
+                        print(f"    final_weighted_score: {r.final_score:.4f}")
                 else:
                     tokens = InvertedIndex.tokenize(argument)
                     if not tokens:

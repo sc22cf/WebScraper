@@ -1,9 +1,11 @@
+import math
+
 import pytest
 from unittest.mock import MagicMock, patch
 from io import StringIO
 
 from src.indexer import InvertedIndex
-from src.search import SearchEngine
+from src.search import SearchEngine, SearchResult, PROXIMITY_WEIGHT
 
 
 # ---------------------------------------------------------------------------
@@ -18,9 +20,9 @@ def _small_index() -> InvertedIndex:
     return idx
 
 
-def _urls(results: list[tuple[str, float]]) -> list[str]:
+def _urls(results: list[SearchResult]) -> list[str]:
     """Extract just the URLs from find() results for assertion convenience."""
-    return [url for url, _ in results]
+    return [r.url for r in results]
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +165,7 @@ class TestTFIDFRanking:
         # "common" appears in all 3 docs → IDF ≈ 0
         # searching just "common": a.com has tf=3, others tf=1
         results = engine.find("common")
-        assert results[0][0] == "http://a.com"
+        assert results[0].url == "http://a.com"
 
     def test_multi_word_tfidf_scoring(self):
         """Multi-word query sums TF-IDF across all terms."""
@@ -175,7 +177,7 @@ class TestTFIDFRanking:
         # b.com score = 1*log(3/2) + 2*0 = 1*log(1.5)
         # a.com should rank higher
         results = engine.find("good friends")
-        assert results[0][0] == "http://a.com"
+        assert results[0].url == "http://a.com"
 
     def test_single_doc_match_returns_one(self):
         """Query matching a single document returns just that document."""
@@ -353,3 +355,147 @@ class TestCLIIntegration:
         with patch("builtins.input", side_effect=EOFError), \
              patch("sys.stdout", new_callable=StringIO):
             runpy.run_module("src.main", run_name="__main__", alter_sys=True)
+
+
+# ---------------------------------------------------------------------------
+# Proximity scoring
+# ---------------------------------------------------------------------------
+
+def _proximity_index() -> InvertedIndex:
+    """Three-document index with varying term proximity.
+
+    - a.com: "good friends" appear adjacent (positions 0, 1)
+    - b.com: "good ... friends" are 4 positions apart (0, 4)
+    - c.com: "good ... ... ... ... ... friends" are 6 apart (0, 6)
+    """
+    idx = InvertedIndex()
+    idx.add_document("http://a.com", "good friends are here today")
+    idx.add_document("http://b.com", "good are here today friends")
+    idx.add_document("http://c.com", "good are here today and also friends")
+    return idx
+
+
+class TestProximityScoring:
+    def test_adjacent_terms_highest_proximity(self):
+        """Adjacent terms should yield the highest proximity score (1.0)."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good friends")
+        scores = {r.url: r.proximity_score for r in results}
+        # a.com has adjacent terms → proximity = 1/1 = 1.0
+        assert scores["http://a.com"] == pytest.approx(1.0)
+
+    def test_distant_terms_lower_proximity(self):
+        """Terms farther apart should yield lower proximity scores."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good friends")
+        scores = {r.url: r.proximity_score for r in results}
+        # b.com: distance 4 → 1/4 = 0.25
+        # c.com: distance 6 → 1/6 ≈ 0.1667
+        assert scores["http://b.com"] > scores["http://c.com"]
+
+    def test_proximity_increases_when_words_closer(self):
+        """Proximity score should strictly increase as words get closer."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good friends")
+        scores = {r.url: r.proximity_score for r in results}
+        assert scores["http://a.com"] > scores["http://b.com"] > scores["http://c.com"]
+
+    def test_single_word_proximity_is_zero(self):
+        """Single-word queries should have proximity_score = 0."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good")
+        for r in results:
+            assert r.proximity_score == 0.0
+
+    def test_multi_word_ranking_prefers_closer_matches(self):
+        """Documents with closer term matches should rank above distant ones
+        when TF-IDF scores are similar."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good friends")
+        urls = [r.url for r in results]
+        # a.com (adjacent) should rank first
+        assert urls[0] == "http://a.com"
+
+    def test_result_contains_all_score_fields(self):
+        """Every SearchResult should expose tfidf_score, proximity_score,
+        and final_score."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good friends")
+        for r in results:
+            assert isinstance(r.tfidf_score, float)
+            assert isinstance(r.proximity_score, float)
+            assert isinstance(r.final_score, float)
+
+    def test_final_score_formula(self):
+        """final_score must equal tfidf_score + PROXIMITY_WEIGHT * proximity_score."""
+        engine = SearchEngine(_proximity_index())
+        results = engine.find("good friends")
+        for r in results:
+            expected = r.tfidf_score + PROXIMITY_WEIGHT * r.proximity_score
+            assert r.final_score == pytest.approx(expected)
+
+    def test_three_term_proximity_averages_pairs(self):
+        """With three query terms, proximity should be the average of
+        the two consecutive-pair scores."""
+        idx = InvertedIndex()
+        # positions: alpha=0, beta=1, gamma=2  → pairs: (0,1)=1, (1,2)=1
+        idx.add_document("http://x.com", "alpha beta gamma")
+        engine = SearchEngine(idx)
+        results = engine.find("alpha beta gamma")
+        # both pairs are adjacent → each pair score = 1.0, average = 1.0
+        assert results[0].proximity_score == pytest.approx(1.0)
+
+    def test_three_term_proximity_with_gap(self):
+        """Three terms where one pair is distant should lower the average."""
+        idx = InvertedIndex()
+        # positions: alpha=0, beta=1, filler=2,3,4, gamma=5
+        idx.add_document("http://x.com", "alpha beta filler filler filler gamma")
+        engine = SearchEngine(idx)
+        results = engine.find("alpha beta gamma")
+        # pair (alpha, beta): distance=1 → 1.0
+        # pair (beta, gamma): distance=4 → 0.25
+        # average = (1.0 + 0.25) / 2 = 0.625
+        assert results[0].proximity_score == pytest.approx(0.625)
+
+    def test_tfidf_still_correct_with_proximity(self):
+        """TF-IDF component should be unchanged by proximity addition."""
+        idx = InvertedIndex()
+        idx.add_document("http://a.com", "good good good friends")
+        idx.add_document("http://b.com", "good friends friends")
+        idx.add_document("http://c.com", "friends rare")
+        engine = SearchEngine(idx)
+
+        results = engine.find("good")
+        scores = {r.url: r.tfidf_score for r in results}
+        # IDF(good) = log(3/2)
+        idf = math.log(3 / 2)
+        assert scores["http://a.com"] == pytest.approx(3 * idf)
+        assert scores["http://b.com"] == pytest.approx(1 * idf)
+
+    def test_cli_output_shows_all_scores(self, tmp_path):
+        """The find command should display tfidf_score, proximity_score,
+        and final_weighted_score for each result."""
+        import src.main as main_mod
+
+        idx = _proximity_index()
+        index_file = tmp_path / "index.json"
+        idx.save_to_file(str(index_file))
+
+        original_path = main_mod.INDEX_PATH
+        main_mod.INDEX_PATH = str(index_file)
+        try:
+            output = self._run_commands(["load", "find good friends", "quit"])
+        finally:
+            main_mod.INDEX_PATH = original_path
+
+        assert "tfidf_score:" in output
+        assert "proximity_score:" in output
+        assert "final_weighted_score:" in output
+
+    def _run_commands(self, commands: list[str]) -> str:
+        from src.main import run_shell
+        user_input = "\n".join(commands)
+        with patch("sys.stdin", StringIO(user_input)), \
+             patch("sys.stdout", new_callable=StringIO) as mock_out:
+            run_shell()
+        return mock_out.getvalue()
