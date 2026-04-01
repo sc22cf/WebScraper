@@ -151,3 +151,19 @@ class TestLookupHelpers:
     def test_get_documents_missing_word(self):
         idx = InvertedIndex()
         assert idx.get_documents("nonexistent") == []
+
+    def test_page_count_empty_index(self):
+        idx = InvertedIndex()
+        assert idx.page_count == 0
+
+    def test_page_count_single_document(self):
+        idx = InvertedIndex()
+        idx.add_document("http://a.com", "hello world")
+        assert idx.page_count == 1
+
+    def test_page_count_multiple_documents(self):
+        idx = InvertedIndex()
+        idx.add_document("http://a.com", "shared word")
+        idx.add_document("http://b.com", "shared word")
+        idx.add_document("http://c.com", "unique term here")
+        assert idx.page_count == 3

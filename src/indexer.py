@@ -63,6 +63,14 @@ class InvertedIndex:
     # Lookup helpers
     # ------------------------------------------------------------------
 
+    @property
+    def page_count(self) -> int:
+        """Return the number of unique URLs indexed."""
+        urls: set[str] = set()
+        for postings in self.index.values():
+            urls.update(postings.keys())
+        return len(urls)
+
     def get_entry(self, word: str) -> dict | None:
         """Return the posting list for *word*, or ``None`` if absent.
 

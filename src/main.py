@@ -35,6 +35,7 @@ def run_shell() -> None:
             crawler.crawl_and_index(index)
             index.save_to_file(INDEX_PATH)
             print(f"Index built and saved to {INDEX_PATH}.")
+            print(f"Total pages indexed: {index.page_count}.")
             engine = SearchEngine(index)
 
         elif command == "load":
@@ -57,9 +58,9 @@ def run_shell() -> None:
             else:
                 results = engine.find(argument)
                 if results:
-                    print(f"Found in {len(results)} page(s):")
-                    for url in results:
-                        print(f"  {url}")
+                    print(f"Found in {len(results)} page(s) (ranked by relevance):")
+                    for url, score in results:
+                        print(f"  {url}  (TF-IDF: {score:.4f})")
                 else:
                     tokens = InvertedIndex.tokenize(argument)
                     if not tokens:
