@@ -18,6 +18,11 @@ def _small_index() -> InvertedIndex:
     return idx
 
 
+def _urls(results: list[tuple[str, float]]) -> list[str]:
+    """Extract just the URLs from find() results for assertion convenience."""
+    return [url for url, _ in results]
+
+
 # ---------------------------------------------------------------------------
 # print_word
 # ---------------------------------------------------------------------------
@@ -68,18 +73,18 @@ class TestFind:
     def test_single_word_found(self):
         engine = SearchEngine(_small_index())
         results = engine.find("good")
-        assert results == ["http://a.com"]
+        assert _urls(results) == ["http://a.com"]
 
     def test_single_word_in_both_docs(self):
         engine = SearchEngine(_small_index())
         results = engine.find("friends")
-        assert sorted(results) == ["http://a.com", "http://b.com"]
+        assert sorted(_urls(results)) == ["http://a.com", "http://b.com"]
 
     def test_multi_word_intersection(self):
         engine = SearchEngine(_small_index())
         # "good" only in a.com, "friends" in both → intersection is a.com
         results = engine.find("good friends")
-        assert results == ["http://a.com"]
+        assert _urls(results) == ["http://a.com"]
 
     def test_unknown_word_returns_empty(self):
         engine = SearchEngine(_small_index())
@@ -100,26 +105,102 @@ class TestFind:
     def test_case_insensitive_query(self):
         engine = SearchEngine(_small_index())
         results = engine.find("GOOD FRIENDS")
-        assert results == ["http://a.com"]
+        assert _urls(results) == ["http://a.com"]
 
     def test_mixed_case_query(self):
         engine = SearchEngine(_small_index())
         results = engine.find("GoOd FrIeNdS")
-        assert results == ["http://a.com"]
+        assert _urls(results) == ["http://a.com"]
 
     def test_repeated_spaces_in_query(self):
         engine = SearchEngine(_small_index())
         results = engine.find("good    friends")
-        assert results == ["http://a.com"]
+        assert _urls(results) == ["http://a.com"]
 
     def test_punctuation_in_query(self):
         engine = SearchEngine(_small_index())
         results = engine.find("good, friends!")
-        assert results == ["http://a.com"]
+        assert _urls(results) == ["http://a.com"]
 
     def test_empty_index(self):
         engine = SearchEngine(InvertedIndex())
         assert engine.find("anything") == []
+
+
+# ---------------------------------------------------------------------------
+# TF-IDF ranking
+# ---------------------------------------------------------------------------
+
+def _tfidf_index() -> InvertedIndex:
+    """Three-document index designed so TF-IDF ordering is deterministic.
+
+    - "good" appears 3× in a.com, 1× in b.com  (not in c.com)
+    - "friends" appears in all three docs
+    - "rare" appears only in c.com (high IDF)
+    """
+    idx = InvertedIndex()
+    idx.add_document("http://a.com", "good good good friends")
+    idx.add_document("http://b.com", "good friends friends")
+    idx.add_document("http://c.com", "friends rare")
+    return idx
+
+
+class TestTFIDFRanking:
+    def test_higher_tf_ranks_first(self):
+        """Doc with higher term frequency should rank above one with lower."""
+        engine = SearchEngine(_tfidf_index())
+        results = engine.find("good")
+        # a.com has tf=3, b.com has tf=1 → a.com should rank first
+        assert _urls(results) == ["http://a.com", "http://b.com"]
+
+    def test_rare_term_boosts_score(self):
+        """A term in fewer documents (higher IDF) should boost a doc's rank."""
+        idx = InvertedIndex()
+        idx.add_document("http://a.com", "common common common")
+        idx.add_document("http://b.com", "common rare")
+        idx.add_document("http://c.com", "common unique")
+        engine = SearchEngine(idx)
+        # "common" appears in all 3 docs → IDF ≈ 0
+        # searching just "common": a.com has tf=3, others tf=1
+        results = engine.find("common")
+        assert results[0][0] == "http://a.com"
+
+    def test_multi_word_tfidf_scoring(self):
+        """Multi-word query sums TF-IDF across all terms."""
+        engine = SearchEngine(_tfidf_index())
+        # "good friends": only a.com and b.com match (AND)
+        # a.com: tf(good)=3, tf(friends)=1; b.com: tf(good)=1, tf(friends)=2
+        # IDF(good) = log(3/2), IDF(friends) = log(3/3) = 0
+        # a.com score = 3*log(3/2) + 1*0 = 3*log(1.5)
+        # b.com score = 1*log(3/2) + 2*0 = 1*log(1.5)
+        # a.com should rank higher
+        results = engine.find("good friends")
+        assert results[0][0] == "http://a.com"
+
+    def test_single_doc_match_returns_one(self):
+        """Query matching a single document returns just that document."""
+        engine = SearchEngine(_tfidf_index())
+        results = engine.find("rare")
+        assert _urls(results) == ["http://c.com"]
+
+    def test_alphabetical_tiebreak(self):
+        """Documents with identical scores are sorted alphabetically."""
+        idx = InvertedIndex()
+        idx.add_document("http://z.com", "word")
+        idx.add_document("http://a.com", "word")
+        engine = SearchEngine(idx)
+        results = engine.find("word")
+        assert _urls(results) == ["http://a.com", "http://z.com"]
+
+    def test_all_docs_same_tf_idf_zero(self):
+        """When every doc contains the term equally, IDF = 0, so scores are 0.
+        Results fall back to alphabetical order."""
+        idx = InvertedIndex()
+        idx.add_document("http://b.com", "hello")
+        idx.add_document("http://a.com", "hello")
+        engine = SearchEngine(idx)
+        results = engine.find("hello")
+        assert _urls(results) == ["http://a.com", "http://b.com"]
 
 
 # ---------------------------------------------------------------------------

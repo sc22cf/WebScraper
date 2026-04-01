@@ -1,8 +1,21 @@
+import math
 from src.indexer import InvertedIndex
 
 
 class SearchEngine:
-    """Query layer over an InvertedIndex."""
+    """Query layer over an InvertedIndex.
+
+    Supports TF-IDF ranked retrieval.  Term Frequency–Inverse Document
+    Frequency (TF-IDF) is a standard information-retrieval weighting scheme
+    that scores each document by how relevant it is to the query:
+
+    * **TF(t, d)** — how often term *t* appears in document *d*.
+    * **IDF(t)** — ``log(N / df)`` where *N* is the total number of indexed
+      pages and *df* is the number of pages containing *t*.  Rare terms
+      receive a higher weight.
+    * **Score(d, Q)** — sum of ``TF(t, d) × IDF(t)`` for every query
+      term *t* in *Q*.
+    """
 
     def __init__(self, index: InvertedIndex):
         self.index = index
@@ -38,39 +51,67 @@ class SearchEngine:
     # find <query>
     # ------------------------------------------------------------------
 
-    def find(self, query: str) -> list[str]:
-        """Return URLs that contain *every* token in *query* (AND semantics).
+    def find(self, query: str) -> list[tuple[str, float]]:
+        """Return URLs containing *every* query token, ranked by TF-IDF score.
 
-        Tokenisation re-uses ``InvertedIndex.tokenize`` so behaviour is
-        consistent with how documents were indexed (lowercase, alphabetic).
-        Returns an empty list for empty / whitespace-only queries or if
-        any token is missing from the index.
+        Uses AND semantics: a document must contain all query tokens to be
+        included.  Results are sorted by descending TF-IDF score so that the
+        most relevant pages appear first.
 
-        The algorithm fetches each token's posting set from the index in
-        **O(1)** and then intersects the sets. Python's ``set.intersection``
-        is implemented in C and runs in **O(min(|A|, |B|))** per pair.
+        Scoring
+        -------
+        For each candidate document *d* and query token *t*:
+
+        * ``TF(t, d)``  = frequency of *t* in *d* (stored in the index).
+        * ``IDF(t)``     = ``log(N / df)`` where *N* = total indexed pages
+          and *df* = number of pages containing *t*.
+        * ``score(d)``   = Σ TF(t, d) × IDF(t)  for all *t* in the query.
 
         Complexity
         ----------
-        Let *K* = number of query tokens, *D_i* = docs for token *i*.
+        Let *K* = query tokens, *D_i* = docs for token *i*, *R* = results.
 
-        * Posting lookups: **O(K)** (each is O(1)).
-        * Set intersections: **O(K · min(D_i))** in the worst case.
-        * Final sort: **O(R log R)** where *R* = number of result URLs.
-        * Overall: **O(K · min(D_i) + R log R)**, which is very fast
-          because *K* is small (number of search terms) and each
-          intersection shrinks the candidate set.
+        * Posting lookups: **O(K)**.
+        * Set intersections: **O(K · min(D_i))**.
+        * Scoring: **O(R · K)** — one TF lookup per token per result.
+        * Final sort: **O(R log R)**.
+        * Overall: **O(K · min(D_i) + R · K + R log R)**.
         """
         tokens = InvertedIndex.tokenize(query)
         if not tokens:
             return []
 
-        # Start with documents for the first token, then intersect
+        n = self.index.page_count
+        if n == 0:
+            return []
+
+        # Collect posting lists and compute IDF for each token
+        posting_lists: list[dict[str, dict]] = []
+        idfs: list[float] = []
         result_set: set[str] | None = None
+
         for token in tokens:
-            docs = set(self.index.get_documents(token))
-            if not docs:
+            entry = self.index.get_entry(token)
+            if entry is None:
                 return []
+            posting_lists.append(entry)
+            df = len(entry)
+            idfs.append(math.log(n / df))
+            docs = set(entry.keys())
             result_set = docs if result_set is None else result_set & docs
 
-        return sorted(result_set) if result_set else []
+        if not result_set:
+            return []
+
+        # Score each candidate document
+        scores: dict[str, float] = {}
+        for url in result_set:
+            score = 0.0
+            for postings, idf in zip(posting_lists, idfs):
+                tf = postings[url]["frequency"]
+                score += tf * idf
+            scores[url] = score
+
+        # Sort by descending score, then alphabetically for ties
+        ranked = sorted(result_set, key=lambda u: (-scores[u], u))
+        return [(url, scores[url]) for url in ranked]
