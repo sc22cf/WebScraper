@@ -6,6 +6,182 @@ from src.indexer import InvertedIndex
 # final_score = tfidf_score + (PROXIMITY_WEIGHT * proximity_score)
 PROXIMITY_WEIGHT: float = 2.0
 
+# ---------------------------------------------------------------------------
+# Suggestion constants
+# ---------------------------------------------------------------------------
+
+ALPHA: float = 0.7   # weight for similarity (edit-distance-based)
+BETA: float = 0.3    # weight for corpus term frequency
+MAX_SUGGESTIONS: int = 5  # default number of suggestions returned
+MAX_EDIT_DISTANCE: int = 2  # max edit distance for a candidate
+
+
+# ---------------------------------------------------------------------------
+# Edit distance
+# ---------------------------------------------------------------------------
+
+def levenshtein(a: str, b: str) -> int:
+    """Compute the Levenshtein (edit) distance between two strings.
+
+    Uses the classic dynamic-programming matrix approach.
+
+    Complexity: **O(len(a) × len(b))** time and **O(min(len(a), len(b)))**
+    space (single-row optimisation).
+    """
+    if len(a) < len(b):
+        return levenshtein(b, a)
+
+    if len(b) == 0:
+        return len(a)
+
+    prev_row = list(range(len(b) + 1))
+
+    for i, ca in enumerate(a):
+        curr_row = [i + 1]
+        for j, cb in enumerate(b):
+            insert = prev_row[j + 1] + 1
+            delete = curr_row[j] + 1
+            substitute = prev_row[j] + (0 if ca == cb else 1)
+            curr_row.append(min(insert, delete, substitute))
+        prev_row = curr_row
+
+    return prev_row[-1]
+
+
+# ---------------------------------------------------------------------------
+# Suggestion data container
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Suggestion:
+    """A single query suggestion with its scoring breakdown."""
+
+    term: str
+    edit_distance: int
+    similarity_score: float
+    frequency_score: float
+    score: float
+
+
+# ---------------------------------------------------------------------------
+# Suggestion engine
+# ---------------------------------------------------------------------------
+
+class SuggestionEngine:
+    """Generates ranked query suggestions from the inverted index vocabulary.
+
+    Strategies used:
+
+    1. **Spelling correction** — terms within ``MAX_EDIT_DISTANCE`` edits of
+       the query token, ranked by similarity.
+    2. **Corpus frequency** — more common terms are promoted.
+
+    All candidates come from the set of words already present in the
+    inverted index (the *vocabulary*).
+    """
+
+    def __init__(self, index: InvertedIndex):
+        self.index = index
+
+    @property
+    def vocabulary(self) -> list[str]:
+        """Return the full sorted vocabulary from the index."""
+        return sorted(self.index.index.keys())
+
+    def _total_frequency(self, term: str) -> int:
+        """Return the total corpus frequency of *term* across all documents."""
+        entry = self.index.get_entry(term)
+        if entry is None:
+            return 0
+        return sum(stats["frequency"] for stats in entry.values())
+
+    def _max_frequency(self) -> int:
+        """Return the highest total corpus frequency of any vocabulary term."""
+        max_freq = 0
+        for term in self.index.index:
+            freq = self._total_frequency(term)
+            if freq > max_freq:
+                max_freq = freq
+        return max_freq if max_freq > 0 else 1
+
+    def _generate_candidates(self, token: str) -> list[Suggestion]:
+        """Build scored ``Suggestion`` objects for every vocabulary term
+        that is a plausible match for *token*.
+
+        A candidate is included if its edit distance to *token* is at most
+        ``MAX_EDIT_DISTANCE``.
+        """
+        max_freq = self._max_frequency()
+        candidates: list[Suggestion] = []
+
+        for term in self.index.index:
+            dist = levenshtein(token, term)
+
+            if dist > MAX_EDIT_DISTANCE:
+                continue
+
+            max_len = max(len(token), len(term), 1)
+            sim = 1.0 - (dist / max_len)
+
+            freq = self._total_frequency(term)
+            freq_score = freq / max_freq
+
+            combined = ALPHA * sim + BETA * freq_score
+
+            candidates.append(Suggestion(
+                term=term,
+                edit_distance=dist,
+                similarity_score=sim,
+                frequency_score=freq_score,
+                score=combined,
+            ))
+
+        return candidates
+
+    @staticmethod
+    def _rank_suggestions(candidates: list[Suggestion]) -> list[Suggestion]:
+        """Sort candidates by descending *score*, then alphabetically."""
+        return sorted(candidates, key=lambda s: (-s.score, s.term))
+
+    def suggest(
+        self,
+        token: str,
+        max_results: int = MAX_SUGGESTIONS,
+    ) -> list[Suggestion]:
+        """Return up to *max_results* ranked suggestions for a single *token*."""
+        token = token.lower().strip()
+        if not token:
+            return []
+
+        if self.index.get_entry(token) is not None:
+            return []
+
+        candidates = self._generate_candidates(token)
+        ranked = self._rank_suggestions(candidates)
+        return ranked[:max_results]
+
+    def suggest_for_query(
+        self,
+        query: str,
+        max_results: int = MAX_SUGGESTIONS,
+    ) -> tuple[str, list[Suggestion]]:
+        """Return the first unrecognised token and its suggestions.
+
+        Returns a ``(token, suggestions)`` tuple so callers can tell the
+        user *which* word is being corrected.  If every token is in the
+        vocabulary, returns ``("", [])``.
+        """
+        tokens = InvertedIndex.tokenize(query)
+        for token in tokens:
+            suggestions = self.suggest(token, max_results)
+            if suggestions:
+                return token, suggestions
+        return "", []
+
+
+# ---------------------------------------------------------------------------
+# Search result container
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SearchResult:
@@ -44,6 +220,7 @@ class SearchEngine:
 
     def __init__(self, index: InvertedIndex):
         self.index = index
+        self.suggestion_engine = SuggestionEngine(index)
 
     # ------------------------------------------------------------------
     # print <word>
@@ -262,3 +439,18 @@ class SearchEngine:
             ))
 
         return self._rank_results(results)
+
+    # ------------------------------------------------------------------
+    # Query suggestions
+    # ------------------------------------------------------------------
+
+    def suggest(self, query: str, max_results: int = 5) -> tuple[str, list[Suggestion]]:
+        """Return the misspelled token and spelling suggestions for *query*.
+
+        Delegates to :class:`SuggestionEngine`.  Intended to be called
+        when ``find`` returns no results.
+
+        Returns ``(token, suggestions)`` where *token* is the first
+        unrecognised word in the query.
+        """
+        return self.suggestion_engine.suggest_for_query(query, max_results)

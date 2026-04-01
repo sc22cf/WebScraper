@@ -5,7 +5,17 @@ from unittest.mock import MagicMock, patch
 from io import StringIO
 
 from src.indexer import InvertedIndex
-from src.search import SearchEngine, SearchResult, PROXIMITY_WEIGHT
+from src.search import (
+    ALPHA,
+    BETA,
+    MAX_EDIT_DISTANCE,
+    PROXIMITY_WEIGHT,
+    SearchEngine,
+    SearchResult,
+    Suggestion,
+    SuggestionEngine,
+    levenshtein,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +509,230 @@ class TestProximityScoring:
              patch("sys.stdout", new_callable=StringIO) as mock_out:
             run_shell()
         return mock_out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Levenshtein distance
+# ---------------------------------------------------------------------------
+
+
+class TestLevenshtein:
+    def test_identical_strings(self):
+        assert levenshtein("fish", "fish") == 0
+
+    def test_single_insertion(self):
+        assert levenshtein("fis", "fish") == 1
+
+    def test_single_deletion(self):
+        assert levenshtein("fish", "fis") == 1
+
+    def test_single_substitution(self):
+        assert levenshtein("fish", "fosh") == 1
+
+    def test_completely_different(self):
+        assert levenshtein("abc", "xyz") == 3
+
+    def test_empty_strings(self):
+        assert levenshtein("", "") == 0
+
+    def test_one_empty(self):
+        assert levenshtein("", "hello") == 5
+        assert levenshtein("hello", "") == 5
+
+    def test_symmetric(self):
+        assert levenshtein("kitten", "sitting") == levenshtein("sitting", "kitten")
+
+
+# ---------------------------------------------------------------------------
+# Helper index for suggestion tests
+# ---------------------------------------------------------------------------
+
+def _suggestion_index() -> InvertedIndex:
+    """Index with a controlled vocabulary for suggestion testing.
+
+    Vocabulary: fish, fishing, filter, friends, good, food, foot, fine, find
+    """
+    idx = InvertedIndex()
+    idx.add_document("http://a.com", "fish fish fish fishing filter friends")
+    idx.add_document("http://b.com", "good food foot fine find find find")
+    return idx
+
+
+# ---------------------------------------------------------------------------
+# SuggestionEngine
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestionEngine:
+    def test_misspelled_returns_correction(self):
+        """'fosh' should suggest 'fish' (edit distance 1)."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("fosh")
+        terms = [s.term for s in results]
+        assert "fish" in terms
+
+    def test_exact_match_returns_no_suggestions(self):
+        """If the word exists in the index, no suggestions are needed."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("fish")
+        assert results == []
+
+    def test_suggestions_ranked_by_score(self):
+        """Suggestions should be sorted by descending combined score."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("fosh")
+        scores = [s.score for s in results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_suggestion_score_formula(self):
+        """Each suggestion's score should equal ALPHA * similarity + BETA * frequency."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("fosh")
+        for s in results:
+            expected = ALPHA * s.similarity_score + BETA * s.frequency_score
+            assert s.score == pytest.approx(expected)
+
+    def test_max_results_limit(self):
+        """Should return at most max_results suggestions."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("f", max_results=3)
+        assert len(results) <= 3
+
+    def test_empty_token_returns_empty(self):
+        engine = SuggestionEngine(_suggestion_index())
+        assert engine.suggest("") == []
+
+    def test_wildly_different_word_excluded(self):
+        """A token very different from all vocabulary should return limited results."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("zzzzzzzzzzz")
+        # Should be empty or only contain items within MAX_EDIT_DISTANCE
+        for s in results:
+            assert s.edit_distance <= MAX_EDIT_DISTANCE
+
+    def test_case_insensitive(self):
+        """Suggestions should work regardless of input case."""
+        engine = SuggestionEngine(_suggestion_index())
+        results = engine.suggest("FOSH")
+        terms = [s.term for s in results]
+        assert "fish" in terms
+
+
+# ---------------------------------------------------------------------------
+# suggest_for_query (multi-token)
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestForQuery:
+    def test_single_unknown_token(self):
+        """A query with one unknown word should get suggestions for it."""
+        engine = SuggestionEngine(_suggestion_index())
+        token, results = engine.suggest_for_query("fosh")
+        assert token == "fosh"
+        terms = [s.term for s in results]
+        assert "fish" in terms
+
+    def test_all_known_tokens_returns_empty(self):
+        """A query where every word is in the index needs no suggestions."""
+        engine = SuggestionEngine(_suggestion_index())
+        token, results = engine.suggest_for_query("fish good")
+        assert token == ""
+        assert results == []
+
+    def test_first_unknown_token_gets_suggestions(self):
+        """When multiple tokens are unknown, suggest for the first one."""
+        engine = SuggestionEngine(_suggestion_index())
+        token, results = engine.suggest_for_query("fosh goot")
+        assert token == "fosh"
+        terms = [s.term for s in results]
+        assert "fish" in terms
+
+    def test_mixed_known_and_unknown(self):
+        """If first token is known but second is not, suggest for second."""
+        engine = SuggestionEngine(_suggestion_index())
+        token, results = engine.suggest_for_query("fish goot")
+        assert token == "goot"
+        terms = [s.term for s in results]
+        assert "good" in terms
+
+
+# ---------------------------------------------------------------------------
+# Integration: SearchEngine.suggest()
+# ---------------------------------------------------------------------------
+
+
+class TestSearchEngineSuggest:
+    def test_suggest_via_search_engine(self):
+        """SearchEngine.suggest should delegate to SuggestionEngine."""
+        engine = SearchEngine(_suggestion_index())
+        token, results = engine.suggest("fosh")
+        assert token == "fosh"
+        terms = [s.term for s in results]
+        assert "fish" in terms
+
+    def test_no_suggestions_for_valid_query(self):
+        engine = SearchEngine(_suggestion_index())
+        token, results = engine.suggest("fish")
+        assert token == ""
+        assert results == []
+
+    def test_find_then_suggest_workflow(self):
+        """When find returns empty, suggest should provide alternatives."""
+        engine = SearchEngine(_suggestion_index())
+        search_results = engine.find("fosh")
+        assert search_results == []
+        token, suggestions = engine.suggest("fosh")
+        assert token == "fosh"
+        assert len(suggestions) > 0
+        assert "fish" in [s.term for s in suggestions]
+
+
+# ---------------------------------------------------------------------------
+# CLI integration: "Did you mean" output
+# ---------------------------------------------------------------------------
+
+
+class TestCLISuggestions:
+    def _run_commands(self, commands: list[str]) -> str:
+        from src.main import run_shell
+
+        user_input = "\n".join(commands)
+        with patch("sys.stdin", StringIO(user_input)), \
+             patch("sys.stdout", new_callable=StringIO) as mock_out:
+            run_shell()
+        return mock_out.getvalue()
+
+    def test_did_you_mean_shown_on_no_results(self, tmp_path):
+        """'find fosh' should print 'Did you mean:' with suggestions."""
+        import src.main as main_mod
+
+        idx = _suggestion_index()
+        index_file = tmp_path / "index.json"
+        idx.save_to_file(str(index_file))
+
+        original_path = main_mod.INDEX_PATH
+        main_mod.INDEX_PATH = str(index_file)
+        try:
+            output = self._run_commands(["load", "find fosh", "quit"])
+        finally:
+            main_mod.INDEX_PATH = original_path
+
+        assert "Instead of 'fosh', did you mean:" in output
+        assert "fish" in output
+
+    def test_no_did_you_mean_on_valid_results(self, tmp_path):
+        """'find fish' should NOT show 'Did you mean:'."""
+        import src.main as main_mod
+
+        idx = _suggestion_index()
+        index_file = tmp_path / "index.json"
+        idx.save_to_file(str(index_file))
+
+        original_path = main_mod.INDEX_PATH
+        main_mod.INDEX_PATH = str(index_file)
+        try:
+            output = self._run_commands(["load", "find fish", "quit"])
+        finally:
+            main_mod.INDEX_PATH = original_path
+
+        assert "Did you mean:" not in output

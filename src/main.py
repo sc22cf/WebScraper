@@ -70,6 +70,11 @@ def run_shell() -> None:
                         print("No search terms provided.")
                     else:
                         print(f"No pages found containing all terms: {tokens}")
+                        token, suggestions = engine.suggest(argument)
+                        if suggestions:
+                            print(f"Instead of '{token}', did you mean:")
+                            for s in suggestions:
+                                print(f"  * {s.term}")
 
         elif command in ("quit", "exit"):
             print("Exiting.")
