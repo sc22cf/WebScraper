@@ -19,6 +19,7 @@ class InvertedIndex:
 
     def __init__(self):
         self.index: dict[str, dict[str, dict]] = {}
+        self._urls: set[str] = set()
 
     # ------------------------------------------------------------------
     # Tokenisation
@@ -47,6 +48,7 @@ class InvertedIndex:
 
         Complexity: **O(T)** where *T* is the number of tokens in *text*.
         """
+        self._urls.add(url)
         tokens = self.tokenize(text)
 
         for position, word in enumerate(tokens):
@@ -65,11 +67,11 @@ class InvertedIndex:
 
     @property
     def page_count(self) -> int:
-        """Return the number of unique URLs indexed."""
-        urls: set[str] = set()
-        for postings in self.index.values():
-            urls.update(postings.keys())
-        return len(urls)
+        """Return the number of unique URLs indexed.
+
+        Complexity: **O(1)** — reads the cached URL set size.
+        """
+        return len(self._urls)
 
     def get_entry(self, word: str) -> dict | None:
         """Return the posting list for *word*, or ``None`` if absent.
@@ -113,4 +115,7 @@ class InvertedIndex:
 
         instance = cls()
         instance.index = data
+        # Rebuild the cached URL set from the loaded posting lists.
+        for postings in data.values():
+            instance._urls.update(postings.keys())
         return instance
