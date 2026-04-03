@@ -80,7 +80,7 @@ class SuggestionEngine:
     inverted index (the *vocabulary*).
     """
 
-    def __init__(self, index: InvertedIndex):
+    def __init__(self, index: InvertedIndex) -> None:
         self.index = index
 
     @property
@@ -218,7 +218,7 @@ class SearchEngine:
       how much proximity influences the final ranking relative to TF-IDF.
     """
 
-    def __init__(self, index: InvertedIndex):
+    def __init__(self, index: InvertedIndex) -> None:
         self.index = index
         self.suggestion_engine = SuggestionEngine(index)
 

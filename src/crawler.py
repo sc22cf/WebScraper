@@ -10,7 +10,7 @@ class RateLimiter:
     def __init__(self, delay_seconds: float = 6.0):
         self.delay_seconds = delay_seconds
 
-    def sleep(self):
+    def sleep(self) -> None:
         """Pause execution for the specified delay."""
         if self.delay_seconds > 0:
             time.sleep(self.delay_seconds)
@@ -23,8 +23,8 @@ class Crawler:
     def __init__(self, base_url: str, rate_limiter: RateLimiter):
         self.base_url = base_url
         self.rate_limiter = rate_limiter
-        self.visited: set = set()
-        self.seen_hashes: set = set()
+        self.visited: set[str] = set()
+        self.seen_hashes: set[str] = set()
         self.domain = urlparse(base_url).netloc
 
     def normalize_url(self, url: str) -> str:
