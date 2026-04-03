@@ -44,6 +44,9 @@ _RNG = random.Random(42)
 # Fixed misspelled token for suggestion benchmarks (constant length L = 4)
 _FIXED_MISSPELLING = "fosh"
 
+# Fixed query for single-word benchmark (same term every run)
+_SINGLE_WORD_QUERY = "alpha"
+
 # Fixed query terms for multi-word proximity benchmark
 _MULTI_WORD_TERMS = ("alpha", "bravo")
 _MULTI_WORD_QUERY = "alpha bravo"
@@ -89,6 +92,41 @@ def _build_corpus(num_docs: int) -> InvertedIndex:
         words = [rng.choice(pool) for _ in range(doc_len)]
         text = " ".join(words)
         idx.add_document(f"http://example.com/page/{i}", text)
+    return idx
+
+
+def _build_single_word_corpus(target_d: int) -> InvertedIndex:
+    """Build a corpus where ``alpha`` appears in exactly *target_d* documents.
+
+    Each of the *target_d* documents contains ``alpha`` once among filler
+    words.  20 extra background documents without ``alpha`` are added so
+    that ``page_count > D`` and TF-IDF's IDF component is non-trivial.
+
+    The filler pool excludes ``alpha`` so the posting-list size is
+    exactly *target_d* — the sole scaling variable.
+    """
+    rng = random.Random(42)
+    pool = _build_word_pool()
+    filler = [w for w in pool if w != _SINGLE_WORD_QUERY]
+
+    idx = InvertedIndex()
+
+    # Documents that DO contain the query term
+    for i in range(target_d):
+        doc_len = rng.randint(30, 80)
+        words = [rng.choice(filler) for _ in range(doc_len)]
+        pos = rng.randint(0, len(words))
+        words.insert(pos, _SINGLE_WORD_QUERY)
+        text = " ".join(words)
+        idx.add_document(f"http://example.com/sw/{i}", text)
+
+    # Background documents WITHOUT the query term
+    for i in range(20):
+        doc_len = rng.randint(30, 80)
+        words = [rng.choice(filler) for _ in range(doc_len)]
+        text = " ".join(words)
+        idx.add_document(f"http://example.com/sw/bg/{i}", text)
+
     return idx
 
 
@@ -297,16 +335,16 @@ class TestQueryExecutionBenchmark:
 
     @pytest.mark.parametrize("label,num_docs", list(CORPUS_SIZES.items()))
     def test_single_word_query(self, label, num_docs):
-        idx = _build_corpus(num_docs)
+        idx = _build_single_word_corpus(num_docs)
         engine = SearchEngine(idx)
-        word = _pick_existing_word(idx)
 
         bench = _BenchmarkResult(f"find_single_word ({label})", num_docs)
-        result_count = 0
-        for t in _bench(lambda: engine.find(word)):
+        for t in _bench(lambda: engine.find(_SINGLE_WORD_QUERY)):
             bench.record(t)
-        result_count = len(engine.find(word))
-        bench.extra["query"] = word
+        result_count = len(engine.find(_SINGLE_WORD_QUERY))
+        entry = idx.get_entry(_SINGLE_WORD_QUERY)
+        bench.extra["query"] = _SINGLE_WORD_QUERY
+        bench.extra["posting_list_size_D"] = len(entry) if entry else 0
         bench.extra["results_count"] = result_count
         bench.report()
 
@@ -425,16 +463,15 @@ class TestPrintBenchmark:
 
     @pytest.mark.parametrize("label,num_docs", list(CORPUS_SIZES.items()))
     def test_print_word(self, label, num_docs):
-        idx = _build_corpus(num_docs)
+        idx = _build_single_word_corpus(num_docs)
         engine = SearchEngine(idx)
-        word = _pick_existing_word(idx)
 
         bench = _BenchmarkResult(f"print_word ({label})", num_docs)
-        for t in _bench(lambda: engine.print_word(word)):
+        for t in _bench(lambda: engine.print_word(_SINGLE_WORD_QUERY)):
             bench.record(t)
-        entry = idx.get_entry(word)
-        bench.extra["query"] = word
-        bench.extra["posting_list_size"] = len(entry) if entry else 0
+        entry = idx.get_entry(_SINGLE_WORD_QUERY)
+        bench.extra["query"] = _SINGLE_WORD_QUERY
+        bench.extra["posting_list_size_D"] = len(entry) if entry else 0
         bench.report()
 
 
@@ -579,6 +616,10 @@ _GRAPH_DIR = Path(__file__).resolve().parent.parent / "benchmarks"
 # make scaling trends visible on log-log axes.
 GRAPH_CORPUS_SIZES: list[int] = [100, 250, 500, 1000, 2500, 5000]
 
+# Posting-list sizes (D) for the single-word find benchmark.
+# D = number of documents containing the fixed query term.
+SINGLE_WORD_D_SIZES: list[int] = [50, 100, 200, 400, 800, 1600, 3200]
+
 # Vocabulary sizes for the suggestion benchmark (V is the independent
 # variable — word-pool size grows per run while L stays constant).
 SUGGESTION_VOCAB_SIZES: list[int] = [500, 1000, 2000, 4000, 8000, 16000]
@@ -617,10 +658,6 @@ _OP_META: dict[str, dict] = {
         "expected": "O(n)",
         "refs": ["O(1)", "O(n)", "O(n log n)"],
     },
-    "Find (single word)": {
-        "expected": "O(D log D) — TF-IDF + sort",
-        "refs": ["O(1)", "O(log n)", "O(n)", "O(n log n)"],
-    },
     "Find (no results)": {
         "expected": "≈ O(1)",
         "refs": ["O(1)", "O(log n)", "O(n)"],
@@ -631,6 +668,12 @@ _OP_META: dict[str, dict] = {
 _SUGGESTION_META = {
     "expected": "O(V × L²) — L fixed ⇒ O(V)",
     "refs": ["O(n)", "O(n log n)", "O(n²)"],
+}
+
+# Single-word graph metadata (separate — uses D on x-axis)
+_SINGLE_WORD_META = {
+    "expected": "O(D log D) — TF-IDF + sort",
+    "refs": ["O(D)", "O(D log D)"],
 }
 
 # Multi-word graph metadata (separate — uses dedicated proximity corpus)
@@ -646,6 +689,9 @@ _REF_STYLES: dict[str, dict] = {
     "O(n)":       {"color": "#ff7f0e", "ls": "--", "lw": 1.2},
     "O(n log n)": {"color": "#d62728", "ls": "-.", "lw": 1.2},
     "O(n²)":      {"color": "#9467bd", "ls": "--", "lw": 1.2},
+    # D-based aliases (same maths, labelled for posting-list–size graphs)
+    "O(D)":       {"color": "#ff7f0e", "ls": "--", "lw": 1.2},
+    "O(D log D)": {"color": "#d62728", "ls": "-.", "lw": 1.2},
 }
 
 # ---------------------------------------------------------------------------
@@ -656,13 +702,13 @@ def _f_of_n(n: float, complexity: str) -> float:
     """Evaluate a named complexity function at *n*."""
     if complexity == "O(1)":
         return 1.0
-    if complexity == "O(log n)":
+    if complexity in ("O(log n)", "O(log D)"):
         return math.log2(max(n, 2))
-    if complexity == "O(n)":
+    if complexity in ("O(n)", "O(D)"):
         return float(n)
-    if complexity == "O(n log n)":
+    if complexity in ("O(n log n)", "O(D log D)"):
         return n * math.log2(max(n, 2))
-    if complexity == "O(n²)":
+    if complexity in ("O(n²)", "O(D²)"):
         return float(n * n)
     raise ValueError(complexity)
 
@@ -699,8 +745,6 @@ def _collect_timings(
     """
     sizes = corpus_sizes if corpus_sizes is not None else GRAPH_CORPUS_SIZES
     results: dict[str, list[float]] = {k: [] for k in _OP_META}
-    # Print (word) is not graphed individually but needed for comparison
-    results["Print (word)"] = []
 
     for num_docs in sizes:
         idx = _build_corpus(num_docs)
@@ -717,21 +761,46 @@ def _collect_timings(
             _avg(_bench(lambda: InvertedIndex.load_from_file(path)))
         )
 
-        # find — single word (TF-IDF scoring only, no proximity)
-        word = _pick_existing_word(idx)
-        results["Find (single word)"].append(_avg(_bench(lambda: engine.find(word))))
-
         # find — no results (term absent → early exit)
         results["Find (no results)"].append(
             _avg(_bench(lambda: engine.find("xyznonexistent")))
         )
 
-        # print — single posting-list lookup + format (for comparison graph)
-        results["Print (word)"].append(
-            _avg(_bench(lambda: engine.print_word(word)))
-        )
-
     return results
+
+
+def _collect_single_word_timings(
+    d_sizes: list[int] | None = None,
+) -> tuple[list[int], list[float], list[float]]:
+    """Collect single-word find *and* print timings with D as the independent variable.
+
+    For each target posting-list size D, a dedicated corpus is built where
+    ``alpha`` appears in exactly D documents.  The fixed query
+    ``_SINGLE_WORD_QUERY`` is used every run — no randomness in term
+    selection.
+
+    Returns ``(actual_d_values, find_avg_ms, print_avg_ms)``.
+    """
+    sizes = d_sizes if d_sizes is not None else SINGLE_WORD_D_SIZES
+    actual_ds: list[int] = []
+    find_ms: list[float] = []
+    print_ms: list[float] = []
+
+    for target_d in sizes:
+        idx = _build_single_word_corpus(target_d)
+        engine = SearchEngine(idx)
+
+        entry = idx.get_entry(_SINGLE_WORD_QUERY)
+        actual_d = len(entry) if entry else 0
+        actual_ds.append(actual_d)
+
+        find_avg = sum(_bench(lambda: engine.find(_SINGLE_WORD_QUERY))) / ITERATIONS * 1000
+        find_ms.append(find_avg)
+
+        print_avg = sum(_bench(lambda: engine.print_word(_SINGLE_WORD_QUERY))) / ITERATIONS * 1000
+        print_ms.append(print_avg)
+
+    return actual_ds, find_ms, print_ms
 
 
 def _collect_multi_word_timings(
@@ -848,16 +917,6 @@ class TestPerformanceGraphs:
             ax.legend(fontsize=8, loc="upper left")
             ax.grid(True, which="both", ls=":", alpha=0.4)
 
-            # Reading guide placed below the axes
-            ax.text(
-                0.02, -0.12,
-                "How to read: all curves share the first point.\n"
-                "slope ≈ 0 → O(1)  ·  slope ≈ 1 → O(n)  ·  "
-                "slope ≈ 2 → O(n²)",
-                transform=ax.transAxes, fontsize=7.5,
-                color="#555555", va="top",
-            )
-
             fig.suptitle(
                 f"{op_name}  —  expected {meta['expected']}",
                 fontsize=13, fontweight="bold",
@@ -876,53 +935,68 @@ class TestPerformanceGraphs:
             print(f"Graph saved: {path}")
 
         # ============================================================
-        # Comparison: Find (single word) vs Print (word)
+        # Single-word find graph (D = posting-list size on x-axis)
         # ============================================================
-        find_times = data["Find (single word)"]
-        print_times = data["Print (word)"]
+        d_values, sw_find_times, sw_print_times = _collect_single_word_timings()
+        sw_meta = _SINGLE_WORD_META
 
         fig, ax = plt.subplots(figsize=(8, 5))
-
         ax.loglog(
-            sizes, find_times, "o-",
-            color="#d62728", linewidth=2.2, markersize=7,
-            label="find (single word)", zorder=5,
-        )
-        ax.loglog(
-            sizes, print_times, "s-",
-            color="#2ca02c", linewidth=2.2, markersize=7,
-            label="print (word)", zorder=5,
+            d_values, sw_find_times, "o-",
+            color="#1f77b4", linewidth=2.2, markersize=7,
+            label="Measured", zorder=5,
         )
 
-        # Reference curves anchored to find (consistent with individual graph)
-        anchor_n, anchor_y = sizes[0], find_times[0]
-        for ref_name in ["O(1)", "O(n)", "O(n log n)"]:
+        anchor_n, anchor_y = d_values[0], sw_find_times[0]
+        for ref_name in sw_meta["refs"]:
             sty = _REF_STYLES[ref_name]
-            curve = _reference_curve(sizes, ref_name, anchor_n, anchor_y)
+            curve = _reference_curve(d_values, ref_name, anchor_n, anchor_y)
             ax.loglog(
-                sizes, curve,
+                d_values, curve,
                 color=sty["color"], ls=sty["ls"], lw=sty["lw"],
                 label=ref_name,
             )
 
-        ax.set_xlabel("Corpus size (documents)", fontsize=10)
+        ax.set_xlabel("Posting-list size D (documents containing query term)", fontsize=10)
         ax.set_ylabel("Avg time (ms)", fontsize=10)
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, which="both", ls=":", alpha=0.4)
-        ax.text(
-            0.02, -0.12,
-            "Both operations scale with posting-list size D.\n"
-            "find includes TF-IDF scoring + O(D log D) sort → "
-            "consistently slower.",
-            transform=ax.transAxes, fontsize=7.5,
-            color="#555555", va="top",
+        fig.suptitle(
+            f"Find (single word)  —  expected {sw_meta['expected']}",
+            fontsize=13, fontweight="bold",
         )
+        fig.tight_layout(rect=[0, 0.06, 1, 0.93])
+        sw_path = _GRAPH_DIR / "find_single_word.png"
+        fig.savefig(sw_path, dpi=150)
+        plt.close(fig)
+        print(f"Graph saved: {sw_path}")
+
+        # ============================================================
+        # Comparison: Find (single word) vs Print (word) — both vs D
+        # ============================================================
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        ax.loglog(
+            d_values, sw_find_times, "o-",
+            color="#d62728", linewidth=2.2, markersize=7,
+            label="find (single word)", zorder=5,
+        )
+        ax.loglog(
+            d_values, sw_print_times, "s-",
+            color="#2ca02c", linewidth=2.2, markersize=7,
+            label="print (word)", zorder=5,
+        )
+
+        ax.set_xlabel("Posting-list size D (documents containing query term)", fontsize=10)
+        ax.set_ylabel("Avg time (ms)", fontsize=10)
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(True, which="both", ls=":", alpha=0.4)
 
         fig.suptitle(
             "Find (single word)  vs  Print (word)  —  same data, different work",
             fontsize=13, fontweight="bold",
         )
-        fig.tight_layout(rect=[0, 0.06, 1, 0.93])
+        fig.tight_layout(rect=[0, 0.0, 1, 0.93])
         cmp_path = _GRAPH_DIR / "find_vs_print_comparison.png"
         fig.savefig(cmp_path, dpi=150)
         plt.close(fig)
@@ -955,14 +1029,6 @@ class TestPerformanceGraphs:
         ax.set_ylabel("Avg time (ms)", fontsize=10)
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, which="both", ls=":", alpha=0.4)
-        ax.text(
-            0.02, -0.12,
-            f"Fixed query: \"{_MULTI_WORD_QUERY}\".  "
-            "Both terms repeat per doc (reps ∝ corpus size).\n"
-            "Position-list growth drives O(P₁ × P₂) proximity cost.",
-            transform=ax.transAxes, fontsize=7.5,
-            color="#555555", va="top",
-        )
 
         fig.suptitle(
             f"Find (multi-word)  —  expected {meta['expected']}",
@@ -1001,15 +1067,6 @@ class TestPerformanceGraphs:
         ax.set_ylabel("Avg time (ms)", fontsize=10)
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, which="both", ls=":", alpha=0.4)
-        ax.text(
-            0.02, -0.12,
-            f"Fixed query token: \"{_FIXED_MISSPELLING}\" (L = {len(_FIXED_MISSPELLING)}).  "
-            "Only V varies.\n"
-            "slope ≈ 1 → O(V)  ·  slope ≈ 2 → O(V²)",
-            transform=ax.transAxes, fontsize=7.5,
-            color="#555555", va="top",
-        )
-
         fig.suptitle(
             f"Suggestion (query)  —  expected {meta['expected']}",
             fontsize=13, fontweight="bold",

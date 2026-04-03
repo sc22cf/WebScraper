@@ -197,27 +197,28 @@ The file `tests/test_benchmark.py` contains a dedicated benchmarking module that
 
 ```bash
 # -s ensures the structured timing output is printed to the terminal
-python -m pytest tests/test_benchmark.py -v -s
+python -m pytest -m benchmark -v -s
 ```
 
 ### What is measured
 
 | Benchmark | Operation | Expected complexity |
 |-----------|-----------|---------------------|
-| **Index save** | `InvertedIndex.save_to_file()` | O(n) — serialise full index to JSON |
-| **Index load** | `InvertedIndex.load_from_file()` | O(n) — parse JSON file |
-| **Single-word find** | `SearchEngine.find("word")` | O(D log D) — TF-IDF scoring + sort (no proximity for single words) |
-| **Multi-word find** | `SearchEngine.find("alpha bravo")` | O(R × P₁ × P₂) — TF-IDF + proximity + sort |
-| **No-results find** | `SearchEngine.find("unknown")` | ≈ O(1) — early exit on missing term |
-| **Suggestion (query)** | `SearchEngine.suggest()` | O(V × L²) — full vocabulary Levenshtein scan; L fixed ⇒ O(V) |
+| **Index save** | `InvertedIndex.save_to_file()` | O(V × D_avg) — iterate over every vocabulary word and its posting list |
+| **Index load** | `InvertedIndex.load_from_file()` | O(S) — `json.load` parses the file in one pass; S ∝ index entries |
+| **Single-word find** | `SearchEngine.find("alpha")` | O(D log D) — TF-IDF scoring O(D) + sort O(D log D); D = posting-list size |
+| **Multi-word find** | `SearchEngine.find("alpha bravo")` | O(K × min(D_i)) intersection + O(R × K × P²) proximity + O(R log R) sort |
+| **No-results find** | `SearchEngine.find("unknown")` | O(K) — early exit per missing term; O(1) for a single-term query |
+| **Print word** | `SearchEngine.print_word()` | O(D) — O(1) dictionary lookup then single pass to format the posting list |
+| **Suggestion (query)** | `SearchEngine.suggest()` | O(V × L²) — Levenshtein over full vocabulary; L fixed ⇒ O(V) |
 
-Where: K = query terms, D / D_i = docs containing the term(s), R = result count, P = position list length, V = vocabulary size, L = query token length.
+Where: K = query terms, D = posting-list size (docs containing the term), D_i = docs containing term i, R = result-set size, P = position-list length, V = vocabulary size, T = avg tokens per document, S = index file size, L = query token length.
 
 ### Complexity-oriented graphs
 
-Each benchmark operation produces a **log-log graph** saved to the `benchmarks/` directory.  Most operations are measured across six corpus sizes (100, 250, 500, 1 000, 2 500, 5 000 documents) to reveal how runtime scales.  The **multi-word find benchmark** uses a dedicated proximity corpus where both query terms (`"alpha"` and `"bravo"`) are injected into every document with growing repetition count, so position-list lengths P scale with corpus size and the O(P₁ × P₂) proximity cost becomes the dominant factor.  The **suggestion benchmark** uses a different independent variable — **vocabulary size V** — with six target sizes (500, 1 000, 2 000, 4 000, 8 000, 16 000 unique words) while keeping the query token fixed (`"fosh"`, length 4) so that L is constant and only V drives the scaling.
+Each benchmark operation produces a **log-log graph** saved to the `benchmarks/` directory.  Most operations are measured across six corpus sizes (100, 250, 500, 1 000, 2 500, 5 000 documents) to reveal how runtime scales.  The **single-word find benchmark** uses a dedicated corpus where a fixed query term (`"alpha"`) is injected into a controlled number of documents, with **posting-list size D** as the independent variable (seven sizes from 50 to 3 200).  The **multi-word find benchmark** uses a dedicated proximity corpus where both query terms (`"alpha"` and `"bravo"`) are injected into every document with growing repetition count, so position-list lengths P scale with corpus size and the O(P₁ × P₂) proximity cost becomes the dominant factor.  The **suggestion benchmark** uses a different independent variable — **vocabulary size V** — with six target sizes (500, 1 000, 2 000, 4 000, 8 000, 16 000 unique words) while keeping the query token fixed (`"fosh"`, length 4) so that L is constant and only V drives the scaling.
 
-The graphs plot measured runtime against corpus size with **reference curves** (O(1), O(n), O(n log n), O(n²)) anchored to the first data point.  On a log-log scale power laws become straight lines — slope ≈ 0 means O(1), slope ≈ 1 means O(n), slope ≈ 2 means O(n²).  Matching the measured (blue) curve to a reference line identifies the complexity class.
+The graphs plot measured runtime against the relevant scaling variable with **reference curves** anchored to the first data point.  On a log-log scale power laws become straight lines — slope ≈ 0 means O(1), slope ≈ 1 means O(n), slope ≈ 2 means O(n²).  Matching the measured (blue) curve to a reference line identifies the complexity class.
 
 #### Individual operation graphs
 
@@ -225,14 +226,14 @@ The graphs plot measured runtime against corpus size with **reference curves** (
 |-------|------------------|
 | `index_save.png` | Measured curve should track the O(n) reference — saving scales linearly with the number of documents in the index. |
 | `index_load.png` | Same as save — JSON parsing is proportional to file size. |
-| `find_single_word.png` | Tracks between O(n) and O(n log n).  Single-word queries use **TF-IDF scoring only** (proximity scoring requires at least two terms).  The scoring pass is O(D) but the final sort adds an O(D log D) component. |
+| `find_single_word.png` | X-axis is **posting-list size D** (not total corpus size).  A dedicated corpus injects `"alpha"` into exactly D documents while a fixed query is used every run.  Single-word queries use **TF-IDF scoring only** (no proximity).  The scoring pass is O(D) but the final sort adds an O(D log D) component — the measured curve should track between the O(D) and O(D log D) reference lines. |
 | `find_multi-word.png` | Uses a **dedicated proximity corpus** with the fixed query `"alpha bravo"`.  Both terms are injected into every document with repetition count proportional to corpus size, so position-list lengths P₁ and P₂ grow.  The O(R × P₁ × P₂) proximity cost dominates, producing super-linear growth between O(n) and O(n²). |
 | `find_no_results.png` | Should hug the O(1) reference — when a query term isn't in the index, `_retrieve_candidates` exits immediately with no scoring work. |
 | `suggestion_query.png` | X-axis is **vocabulary size V** (not corpus size).  With the query token held constant (`"fosh"`, L = 4), Levenshtein cost per word is fixed and total runtime scales as O(V).  The measured curve should track the O(V) reference line. |
 
 #### Find (single word) vs Print (word) — comparison graph
 
-The graph `benchmarks/find_vs_print_comparison.png` overlays the two operations that query the **same word** and therefore traverse the **same posting list**.  Both grow with posting-list size D, but `find` (red) is consistently above `print` (green).  The vertical gap represents the extra work `find` performs.
+The graph `benchmarks/find_vs_print_comparison.png` overlays the two operations that query the **same fixed word** (`"alpha"`) on the **same dedicated corpus** at each posting-list size D.  Both grow with D, but `find` (red) is consistently above `print` (green).  The vertical gap represents the extra work `find` performs.
 
 **Why `find` is slower than `print` for the same word:**
 
@@ -275,8 +276,9 @@ Benchmark: find_single_word (medium)
 
 ### Interpretation and trade-offs
 
-* **Index load/save** scales with file size.  For the target site (~100 pages) load times are negligible; for larger corpora, switching to a binary format (e.g. `pickle`) would improve I/O speed.
-* **Proximity scoring** is the most expensive per-document operation because it compares all position pairs.  Sorting position lists and using a merge-scan would reduce this from O(P₁ × P₂) to O(P₁ + P₂).
+* **Index load/save** scales with index size — O(V × D_avg) to write, O(S) to read.  For the target site (~100 pages) both are negligible; for larger corpora, switching to a binary format (e.g. `pickle`) would improve I/O speed.
+* **TF-IDF scoring** is cheap at O(K) per document — one multiply per query term.  The O(D log D) *sort* of results is the dominant cost for single-word queries, as the find-vs-print comparison graph shows.
+* **Proximity scoring** is the most expensive per-document operation because it enumerates all position pairs — O(P₁ × P₂) per consecutive term pair.  Sorting position lists and using a merge-scan would reduce this to O(P₁ + P₂).
 * **Suggestion generation** scales linearly with vocabulary size because it computes Levenshtein distance (O(L²) per word) against every word.  With a fixed-length query token, total cost is O(V).  A BK-tree or trie would make this sub-linear for large vocabularies.
 
 ## Testing
@@ -284,11 +286,8 @@ Benchmark: find_single_word (medium)
 The test suite uses **pytest** with `unittest.mock` to mock all HTTP calls (no network required).
 
 ```bash
-# Run the full suite with verbose output
-python -m pytest tests/ -v
-
-# Run with coverage report
-python -m pytest tests/ --cov=src --cov-report=term-missing
+# Run the full suite with verbose output and coverage report
+python -m pytest tests/ --cov=src --cov-report=term-missing -v
 ```
 
 ### Test files
